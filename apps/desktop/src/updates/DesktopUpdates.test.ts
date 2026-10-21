@@ -1,5 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
-import { DESKTOP_UPDATE_RESTART_MARKER_FILE } from "@t3tools/contracts";
+import {
+  DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
+  DESKTOP_UPDATE_RESTART_MARKER_FILE,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -388,11 +391,11 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
-  it.effect("marks the backend stop for an install as an update restart", () => {
-    let markersAtStop: ReadonlyArray<string> = [];
+  it.effect("marks the update restart and the install in progress before stopping backends", () => {
+    let markersAtStop: Array<string> = [];
     const harness = makeHarness({
       stopBackend: Effect.sync(() => {
-        markersAtStop = [...harness.updateRestartMarkers];
+        markersAtStop = [...harness.updateMarkers];
       }),
     });
 
@@ -405,8 +408,10 @@ describe("DesktopUpdates", () => {
         yield* flushCallbacks;
 
         assert.isTrue((yield* updates.install).accepted);
-        assert.deepEqual(markersAtStop, [
-          environment.path.join(environment.baseDir, "runtime", DESKTOP_UPDATE_RESTART_MARKER_FILE),
+        const runtimeDir = environment.path.join(environment.baseDir, "runtime");
+        assert.sameMembers(markersAtStop, [
+          environment.path.join(runtimeDir, DESKTOP_UPDATE_RESTART_MARKER_FILE),
+          environment.path.join(runtimeDir, DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE),
         ]);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
@@ -473,7 +478,7 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
-  it.effect("drops the update restart marker when an install is interrupted", () =>
+  it.effect("drops the update markers when an install is interrupted", () =>
     Effect.gen(function* () {
       const stopping = yield* Deferred.make<void>();
       const harness = makeHarness({
@@ -489,10 +494,10 @@ describe("DesktopUpdates", () => {
 
           const installFiber = yield* updates.install.pipe(Effect.forkScoped);
           yield* Deferred.await(stopping);
-          assert.equal(harness.updateRestartMarkers.size, 1);
+          assert.equal(harness.updateMarkers.size, 2);
 
           yield* Fiber.interrupt(installFiber);
-          assert.equal(harness.updateRestartMarkers.size, 0);
+          assert.equal(harness.updateMarkers.size, 0);
         }),
       ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
     }),
@@ -522,7 +527,7 @@ describe("DesktopUpdates", () => {
         assert.isTrue(result.accepted);
         assert.isFalse(yield* Ref.get(desktopState.quitting));
         assert.deepEqual(harness.installSteps, ["quitAndInstall", "startBackend"]);
-        assert.equal(harness.updateRestartMarkers.size, 0);
+        assert.equal(harness.updateMarkers.size, 0);
         assert.equal(harness.installRecords.size, 0);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));

@@ -1,13 +1,19 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
+import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
@@ -361,6 +367,150 @@ describe("ssh tunnel scripts", () => {
           Effect.scoped,
         );
       }),
+  );
+});
+
+describe("ssh launch while the host's desktop app installs an update", () => {
+  const windowsHost = HostProcess.Platform.defaultValue() === "win32";
+  const target = { alias: "devbox", hostname: "devbox", username: null, port: null } as const;
+  // Stands in for `t3 serve`: answers readiness probes and records itself in
+  // the home's runtime file, as the desktop backend and launched servers do.
+  const FAKE_SERVER = `const fs = require("node:fs");
+const http = require("node:http");
+const path = require("node:path");
+const args = process.argv.slice(2);
+const flag = (name) => args[args.indexOf(name) + 1];
+const server = http.createServer((_request, response) => response.end("ok"));
+server.listen(Number(flag("--port")), "127.0.0.1", () => {
+  const port = server.address().port;
+  const userdata = path.join(flag("--base-dir"), "userdata");
+  fs.mkdirSync(userdata, { recursive: true });
+  fs.writeFileSync(
+    path.join(userdata, "server-runtime.json"),
+    JSON.stringify({ version: 1, pid: process.pid, port, origin: "http://127.0.0.1:" + port }),
+  );
+  console.log(port);
+});
+`;
+
+  const isAlive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const prepareHost = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const localSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ssh-update-launch-" });
+    const home = `${root}/home`;
+    const t3Home = `${home}/.t3`;
+    const fakeServer = `${root}/fake-t3.cjs`;
+    yield* fs.makeDirectory(`${t3Home}/runtime`, { recursive: true });
+    yield* fs.writeFileString(fakeServer, FAKE_SERVER);
+
+    const managedPids = fs.readDirectory(`${t3Home}/ssh-launch`).pipe(
+      Effect.flatMap((stateKeys) =>
+        Effect.forEach(stateKeys, (stateKey) =>
+          fs.readFileString(`${t3Home}/ssh-launch/${stateKey}/pid`).pipe(
+            Effect.map((pid) => [Number(pid.trim())]),
+            Effect.orElseSucceed(() => []),
+          ),
+        ),
+      ),
+      Effect.map((pids) => pids.flat()),
+      Effect.orElseSucceed((): ReadonlyArray<number> => []),
+    );
+    // Runs the launch script in a local shell whose HOME is this host instead of
+    // over SSH. Like a server started over SSH, one it launches outlives the
+    // command, until the host's scope ends and its process group is stopped.
+    const hostScope = yield* Effect.scope;
+    const sshSpawner = ChildProcessSpawner.make((command) =>
+      command._tag === "StandardCommand"
+        ? localSpawner
+            .spawn(
+              ChildProcess.make("sh", ["-s", "--", command.args.at(-1) ?? ""], {
+                ...command.options,
+                env: { HOME: home, PATH: process.env.PATH ?? "" },
+                extendEnv: false,
+              }),
+            )
+            .pipe(Effect.provideService(Scope.Scope, hostScope))
+        : Effect.die("unexpected piped SSH command"),
+    );
+    const launch = SshTunnel.launchOrReuseRemoteServer(target, undefined, {
+      nodeScriptPath: fakeServer,
+    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, sshSpawner));
+
+    const markUpdateInProgress = (ageMinutes: number) =>
+      Effect.gen(function* () {
+        const marker = `${t3Home}/runtime/${DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE}`;
+        yield* fs.writeFileString(marker, "");
+        // Numeric file times are in seconds.
+        const writtenAt = (yield* Clock.currentTimeMillis) / 1000 - ageMinutes * 60;
+        yield* fs.utimes(marker, writtenAt, writtenAt);
+      });
+
+    const startDesktopServer = Effect.gen(function* () {
+      const server = yield* localSpawner.spawn(
+        ChildProcess.make("node", [fakeServer, "serve", "--port", "0", "--base-dir", t3Home]),
+      );
+      const port = yield* server.stdout.pipe(
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.runHead,
+      );
+      return Number(Option.getOrThrow(port));
+    });
+
+    return { launch, managedPids, markUpdateInProgress, startDesktopServer };
+  });
+
+  it.live.skipIf(windowsHost)("starts no server while the update is fresh", () =>
+    Effect.gen(function* () {
+      const { launch, managedPids, markUpdateInProgress } = yield* prepareHost;
+      yield* markUpdateInProgress(0);
+
+      const result = yield* Effect.result(launch);
+      assert.isTrue(Result.isFailure(result));
+      if (Result.isFailure(result)) {
+        assert.instanceOf(result.failure, SshCommandError);
+        if (result.failure instanceof SshCommandError) {
+          assert.equal(result.failure.exitCode, 1);
+          assert.include(result.failure.stderr, "T3 Code on this host is installing an update");
+        }
+      }
+      assert.deepEqual(yield* managedPids, []);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.skipIf(windowsHost)("starts a server as usual once the update marker is stale", () =>
+    Effect.gen(function* () {
+      const { launch, managedPids, markUpdateInProgress } = yield* prepareHost;
+      yield* markUpdateInProgress(2);
+
+      const launched = yield* launch;
+      assert.equal(launched.remoteServerKind, "managed");
+      const [pid] = yield* managedPids;
+      assert.isTrue(pid !== undefined && isAlive(pid));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live.skipIf(windowsHost)(
+    "adopts the relaunched desktop server while the update is fresh",
+    () =>
+      Effect.gen(function* () {
+        const { launch, managedPids, markUpdateInProgress, startDesktopServer } =
+          yield* prepareHost;
+        yield* markUpdateInProgress(0);
+        const desktopPort = yield* startDesktopServer;
+
+        assert.deepEqual(yield* launch, { remotePort: desktopPort, remoteServerKind: "external" });
+        assert.deepEqual(yield* managedPids, []);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
 

@@ -1,4 +1,5 @@
 import {
+  DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
   DesktopUpdateChannelSchema,
   type DesktopRuntimeInfo,
@@ -588,20 +589,33 @@ export const make = Effect.gen(function* () {
     updateRestartMarkerDir,
     DESKTOP_UPDATE_RESTART_MARKER_FILE,
   );
-  const writeUpdateRestartMarker = fileSystem
-    .makeDirectory(updateRestartMarkerDir, { recursive: true })
-    .pipe(
-      Effect.andThen(fileSystem.writeFileString(updateRestartMarkerPath, "")),
-      Effect.catch((error) =>
-        logUpdaterWarning("Could not write the update restart marker.", { errorTag: error._tag }),
-      ),
+  const updateInProgressMarkerPath = environment.path.join(
+    updateRestartMarkerDir,
+    DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
+  );
+  const writeUpdateMarker = (markerPath: string, warning: string) =>
+    fileSystem.makeDirectory(updateRestartMarkerDir, { recursive: true }).pipe(
+      Effect.andThen(fileSystem.writeFileString(markerPath, "")),
+      Effect.catch((error) => logUpdaterWarning(warning, { errorTag: error._tag })),
     );
+  const writeUpdateMarkers = Effect.all(
+    [
+      writeUpdateMarker(updateRestartMarkerPath, "Could not write the update restart marker."),
+      writeUpdateMarker(
+        updateInProgressMarkerPath,
+        "Could not write the update in-progress marker.",
+      ),
+    ],
+    { discard: true },
+  );
 
   // A failed or interrupted install brings no updated backend, so a later
-  // quit must release the tunnel.
-  const removeUpdateRestartMarker = fileSystem
-    .remove(updateRestartMarkerPath, { force: true })
-    .pipe(Effect.ignore);
+  // quit must release the tunnel and an SSH launch has nothing to wait for.
+  const removeUpdateMarkers = Effect.forEach(
+    [updateRestartMarkerPath, updateInProgressMarkerPath],
+    (markerPath) => fileSystem.remove(markerPath, { force: true }).pipe(Effect.ignore),
+    { discard: true },
+  );
 
   const installRecordPath = environment.path.join(
     updateRestartMarkerDir,
@@ -647,7 +661,7 @@ export const make = Effect.gen(function* () {
       finishUpdateAction("install"),
       Ref.set(desktopState.quitting, false),
       Ref.set(installRunningBackendsRef, []),
-      removeUpdateRestartMarker,
+      removeUpdateMarkers,
       removeInstallRecord,
     ],
     { discard: true },
@@ -664,7 +678,7 @@ export const make = Effect.gen(function* () {
     if (!ownsRecovery) return;
 
     yield* Ref.set(desktopState.quitting, false);
-    yield* removeUpdateRestartMarker;
+    yield* removeUpdateMarkers;
     yield* removeInstallRecord;
     yield* Effect.gen(function* () {
       const runningInstances = yield* Ref.getAndSet(installRunningBackendsRef, []);
@@ -739,7 +753,7 @@ export const make = Effect.gen(function* () {
         yield* Ref.set(installRunningBackendsRef, []);
 
         return yield* Effect.gen(function* () {
-          yield* writeUpdateRestartMarker;
+          yield* writeUpdateMarkers;
           const { downloadedVersion } = yield* Ref.get(updateStateRef);
           if (downloadedVersion !== null) yield* writeInstallRecord(downloadedVersion);
           // Stop every backend in the pool, not just the primary. With parallel

@@ -1,6 +1,7 @@
-import type {
-  DesktopSshEnvironmentBootstrap,
-  DesktopSshEnvironmentTarget,
+import {
+  DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
+  type DesktopSshEnvironmentBootstrap,
+  type DesktopSshEnvironmentTarget,
 } from "@t3tools/contracts";
 import { waitForHttpReady as waitForHttpReadyShared } from "@t3tools/shared/httpReadiness";
 import { cliReleaseDownloadBaseUrl } from "@t3tools/shared/cliRelease";
@@ -540,6 +541,7 @@ STATE_KEY="$1"
 STATE_DIR="$HOME/.t3/ssh-launch/$STATE_KEY"
 DEFAULT_SERVER_HOME="$HOME/.t3"
 DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"
+DESKTOP_UPDATE_MARKER="$DEFAULT_SERVER_HOME/runtime/@@T3_DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE@@"
 PORT_FILE="$STATE_DIR/port"
 PID_FILE="$STATE_DIR/pid"
 MANAGED_FILE="$STATE_DIR/managed"
@@ -703,6 +705,13 @@ else
   REMOTE_MANAGED=""
 fi
 if [ -z "$REMOTE_PORT" ]; then
+  # The desktop app stops its server to install an update and relaunches
+  # seconds later. A server started in that gap would hold the T3 home and
+  # keep the updated app from starting, so fail and let the client retry.
+  if [ -f "$DESKTOP_UPDATE_MARKER" ] && [ -n "$(find "$DESKTOP_UPDATE_MARKER" -mmin -1 2>/dev/null)" ]; then
+    printf 'T3 Code on this host is installing an update; the connection will retry shortly.\\n' >&2
+    exit 1
+  fi
   REMOTE_PORT="$(pick_port)" || true
   if [ -z "$REMOTE_PORT" ]; then
     if [ "$T3_ARCHIVE_MODE" = "1" ]; then
@@ -848,6 +857,7 @@ function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
     T3_READY_TIMEOUT_MS: String(REMOTE_READY_TIMEOUT_MS),
     T3_REUSE_READY_TIMEOUT_MS: String(REMOTE_REUSE_READY_TIMEOUT_MS),
     T3_READY_PROBE_TIMEOUT_MS: String(SSH_READY_PROBE_TIMEOUT_MS),
+    T3_DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE: DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE,
   });
 }
 

@@ -43,3 +43,9 @@ export type DesktopBackendBootstrap = typeof DesktopBackendBootstrap.Type;
     away, so a backend that sees a fresh marker at shutdown keeps its managed
     tunnel. */
 export const DESKTOP_UPDATE_RESTART_MARKER_FILE = "desktop-update-restart";
+
+/** Written to `<t3Home>/runtime` with the restart marker, but never consumed
+    by a backend. While it is under a minute old, an SSH launch on this host
+    starts no server, so it cannot take the T3 home before the updated app
+    relaunches. */
+export const DESKTOP_UPDATE_IN_PROGRESS_MARKER_FILE = "desktop-update-in-progress";
