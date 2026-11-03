@@ -45,7 +45,8 @@ const writeElectronNodeLauncher = Effect.fn("CodexManagedRuntime.writeElectronNo
     const windows = (yield* HostProcess.Platform) === "win32";
     const launcherPath = path.join(directory, windows ? "managed-token.cmd" : "managed-token");
     const script = windows
-      ? `@echo off\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${command}" %*\r\n`
+      ? // cmd.exe expands `%` even inside quotes.
+        `@echo off\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${command.replaceAll("%", "%%")}" %*\r\n`
       : `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quoteShell(command)} "$@"\n`;
     const current = yield* fs.readFileString(launcherPath).pipe(Effect.orElseSucceed(() => null));
     if (current === script) return launcherPath;
