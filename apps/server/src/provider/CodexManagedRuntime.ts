@@ -52,10 +52,14 @@ const writeElectronNodeLauncher = Effect.fn("CodexManagedRuntime.writeElectronNo
     if (current === script) return launcherPath;
     // Other managed instances' Codex may be running it; replace it whole.
     yield* fs.makeDirectory(directory, { recursive: true });
-    const staged = yield* fs.makeTempFile({ directory, prefix: ".managed-token-" });
-    yield* fs.writeFileString(staged, script);
-    yield* fs.chmod(staged, 0o755);
-    yield* fs.rename(staged, launcherPath);
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const staged = yield* fs.makeTempFileScoped({ directory, prefix: ".managed-token-" });
+        yield* fs.writeFileString(staged, script);
+        yield* fs.chmod(staged, 0o755);
+        yield* fs.rename(staged, launcherPath);
+      }),
+    );
     return launcherPath;
   },
 );

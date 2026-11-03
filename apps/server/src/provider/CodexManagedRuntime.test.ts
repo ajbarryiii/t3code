@@ -199,6 +199,12 @@ it.live.each([
               stderr: "",
               code: 0,
             });
+            if (host === "Electron") {
+              // The launcher is replaced in place; nothing else accumulates beside it.
+              assert.deepEqual(yield* fs.readDirectory(path.dirname(command)), [
+                path.basename(command),
+              ]);
+            }
             const saved = Option.getOrThrow(yield* runtime.auth.read);
             const expired = yield* encodeJson({ ...saved, expiresAt: 0 });
             yield* store.set(new TextEncoder().encode(expired));
