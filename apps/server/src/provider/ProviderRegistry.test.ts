@@ -487,19 +487,22 @@ it.layer(
         const { binaryPath } = yield* writeFakeCodexCli(
           [
             `if [ "$1" = "--version" ]; then`,
-            // The fallback runs with the provider's environment and CODEX_HOME.
+            // The fallback runs with the provider's environment and CODEX_HOME, not the server's.
             `  [ "$CODEX_HOME" = "${codexHome}" ] && [ "$FAKE_CODEX_ENV" = "kept" ] || exit 2`,
+            `  [ -z "\${ELECTRON_RUN_AS_NODE+x}" ] || exit 2`,
             `  echo 0.1.4161006; exit 0`,
             `fi`,
             OBSOLETE_CODEX_APP_SERVER,
           ].join("\n"),
         );
         const settings = decodeCodexSettings({ binaryPath, homePath: codexHome });
+        const { ELECTRON_RUN_AS_NODE: _serverOnly, ...hostEnvironment } = process.env;
+        const providerEnvironment = { ...hostEnvironment, FAKE_CODEX_ENV: "kept" };
+        // The desktop server itself runs as Node; the provider environment has that removed.
+        yield* Effect.addFinalizer(() => Effect.sync(() => vi.unstubAllEnvs()));
+        vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
 
-        const status = yield* checkCodexProviderStatus(settings, undefined, {
-          ...process.env,
-          FAKE_CODEX_ENV: "kept",
-        });
+        const status = yield* checkCodexProviderStatus(settings, undefined, providerEnvironment);
 
         assert.strictEqual(status.status, "error");
         assert.strictEqual(status.installed, true);

@@ -781,7 +781,10 @@ const withConfiguredNpmVersionLookup = Effect.fn("withConfiguredNpmVersionLookup
   if (!packageName || capabilities.latestVersion !== undefined) {
     return capabilities;
   }
-  const env = { ...(yield* HostProcess.Environment), ...capabilities.update?.env };
+  const env = {
+    ...(yield* mergeProviderInstanceEnvironment(undefined, yield* HostProcess.Environment)),
+    ...capabilities.update?.env,
+  };
   const npmPath = yield* resolveCommandPath("npm", { env });
   if (!npmPath) return capabilities;
   const services = yield* Effect.context<ProviderMaintenanceResolverServices>();

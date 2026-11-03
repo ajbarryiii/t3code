@@ -624,14 +624,12 @@ const probeCodexCliVersion = Effect.fn("probeCodexCliVersion")(
     const environment = yield* codexProcessEnvironment(input);
     const spawnCommand = yield* resolveSpawnCommand(input.binaryPath, ["--version"], {
       env: environment,
-      extendEnv: true,
     });
     const result = yield* spawnAndCollect(
       input.binaryPath,
       ChildProcess.make(spawnCommand.command, spawnCommand.args, {
         cwd: input.cwd,
         env: environment,
-        extendEnv: true,
         forceKillAfter: CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER,
         shell: spawnCommand.shell,
       }),

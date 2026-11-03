@@ -105,13 +105,22 @@ const noSpawn = ChildProcessSpawner.make(() =>
 );
 
 function stdoutSpawner(
-  onSpawn: (command: string, args: ReadonlyArray<string>) => string,
+  onSpawn: (
+    command: string,
+    args: ReadonlyArray<string>,
+    env: Readonly<Record<string, unknown>> | undefined,
+  ) => string,
   exitCodeOf: (args: ReadonlyArray<string>) => number = () => 0,
 ) {
   return ChildProcessSpawner.make((command) => {
-    const { command: executable, args } = command as unknown as {
+    const {
+      command: executable,
+      args,
+      options,
+    } = command as unknown as {
       readonly command: string;
       readonly args: ReadonlyArray<string>;
+      readonly options: { readonly env?: Readonly<Record<string, unknown>> };
     };
     return Effect.succeed(
       ChildProcessSpawner.makeHandle({
@@ -121,7 +130,7 @@ function stdoutSpawner(
         kill: () => Effect.void,
         unref: Effect.succeed(Effect.void),
         stdin: Sink.drain,
-        stdout: Stream.encodeText(Stream.make(onSpawn(executable, args))),
+        stdout: Stream.encodeText(Stream.make(onSpawn(executable, args, options.env))),
         stderr: Stream.empty,
         all: Stream.empty,
         getInputFd: () => Sink.drain,
@@ -241,13 +250,20 @@ it.layer(
           fixture.install === "native" ? nativePackageToolUpdate : packageToolUpdate,
           { binaryPath, env: { PATH: fixture.install === "npm" ? npmBinDir : "" } },
         ).pipe(
-          Effect.provideService(HostProcess.Environment, { PATH: npmBinDir }),
+          // The desktop server runs as Node under an AppImage; npm must not inherit either.
+          Effect.provideService(HostProcess.Environment, {
+            PATH: npmBinDir,
+            APPDIR: NodePath.join(tempDir, "appimage"),
+            ELECTRON_RUN_AS_NODE: "1",
+          }),
           Effect.provideService(
             ChildProcessSpawner.ChildProcessSpawner,
             stdoutSpawner(
-              (command, args) => {
+              (command, args, env) => {
                 probes++;
                 expect(command).toBe(NodePath.join(npmBinDir, "npm"));
+                expect(env).not.toHaveProperty("APPDIR");
+                expect(env).not.toHaveProperty("ELECTRON_RUN_AS_NODE");
                 expect(args).toEqual([
                   "view",
                   "--global",
