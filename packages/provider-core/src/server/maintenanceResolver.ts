@@ -415,7 +415,10 @@ const resolvePnpmGlobalLatestVersion = Effect.fn("resolvePnpmGlobalLatestVersion
   env: NodeJS.ProcessEnv,
 ) {
   // Match the updater's pnpm and environment, without the server's AppImage paths.
-  const hostEnv = yield* mergeProviderInstanceEnvironment(undefined, yield* HostProcess.Environment);
+  const hostEnv = yield* mergeProviderInstanceEnvironment(
+    undefined,
+    yield* HostProcess.Environment,
+  );
   const pnpmPath = yield* resolveCommandPath("pnpm", { env: { ...hostEnv, ...env } });
   if (!pnpmPath) return null;
   // Silent reporting keeps project package-manager warnings out of the JSON.
