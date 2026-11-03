@@ -54,13 +54,15 @@ it.live.each([
         `#!/bin/sh\n[ "$ELECTRON_RUN_AS_NODE" = 1 ] || { echo "started as an Electron app" >&2; exit 9; }\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
       );
       yield* fs.chmod(electronPath, 0o755);
+      // Pinned, so a test run from inside the desktop app still covers a plain Node server.
+      const { ELECTRON_RUN_AS_NODE: _hostMode, ...nodeEnvironment } = process.env;
       const electronHost = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         host === "Node"
-          ? effect
+          ? effect.pipe(Effect.provideService(HostProcess.Environment, nodeEnvironment))
           : effect.pipe(
               Effect.provideService(HostProcess.ExecutablePath, electronPath),
               Effect.provideService(HostProcess.Environment, {
-                ...process.env,
+                ...nodeEnvironment,
                 ELECTRON_RUN_AS_NODE: "1",
               }),
             );

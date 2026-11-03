@@ -34,6 +34,26 @@ const managedCodexLaunchArgs = (command: string, args: ReadonlyArray<string>) =>
 
 const quoteShell = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
+/** Mirrors the desktop's `t3.cmd`: cmd.exe reads the script in the console code page. */
+const windowsLauncherScript = (command: string) => {
+  const utf8 = [...command].some((character) => character.codePointAt(0)! > 0x7f);
+  const restore = utf8 ? ["chcp %t3_codepage% >nul"] : [];
+  return [
+    "@echo off",
+    "setlocal EnableExtensions DisableDelayedExpansion",
+    ...(utf8
+      ? [`for /f "tokens=2 delims=:." %%c in ('chcp') do set "t3_codepage=%%c"`, "chcp 65001 >nul"]
+      : []),
+    'set "ELECTRON_RUN_AS_NODE=1"',
+    // cmd.exe expands `%` even inside quotes.
+    `"${command.replaceAll("%", "%%")}" %*`,
+    'set "t3_exit=%ERRORLEVEL%"',
+    ...restore,
+    "exit /b %t3_exit%",
+    "",
+  ].join("\r\n");
+};
+
 /**
  * Codex's environment has Electron's run-as-Node mode removed, so a desktop server's token
  * command would start a second app. This launcher restores the mode for that one command.
@@ -45,8 +65,7 @@ const writeElectronNodeLauncher = Effect.fn("CodexManagedRuntime.writeElectronNo
     const windows = (yield* HostProcess.Platform) === "win32";
     const launcherPath = path.join(directory, windows ? "managed-token.cmd" : "managed-token");
     const script = windows
-      ? // cmd.exe expands `%` even inside quotes.
-        `@echo off\r\nset "ELECTRON_RUN_AS_NODE=1"\r\n"${command.replaceAll("%", "%%")}" %*\r\n`
+      ? windowsLauncherScript(command)
       : `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${quoteShell(command)} "$@"\n`;
     const current = yield* fs.readFileString(launcherPath).pipe(Effect.orElseSucceed(() => null));
     if (current === script) return launcherPath;
